@@ -328,6 +328,7 @@ extern AVFilter ff_vf_scale_npp;
 extern AVFilter ff_vf_scale_qsv;
 extern AVFilter ff_vf_scale_vaapi;
 extern AVFilter ff_vf_scale2ref;
+extern AVFilter ff_vf_secamize;
 extern AVFilter ff_vf_select;
 extern AVFilter ff_vf_selectivecolor;
 extern AVFilter ff_vf_sendcmd;
