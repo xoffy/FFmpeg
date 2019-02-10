@@ -43,15 +43,15 @@ typedef struct {
 } RandomizeContext;
 
 typedef struct {
-    uint8_t *delta;
     struct SwsContext *sws;
-    uint8_t *rsz;
+    uint8_t *delta;
+    uint8_t *miniature;
 } DeltaContext;
 
 typedef struct {
     int lw, lh;
     int cw, ch;
-    uint8_t *cbuf[2];
+    uint8_t *cbuf;
     DeltaContext dc;
 } FrameContext;
 
@@ -59,6 +59,8 @@ typedef struct SecamizeContext {
     const AVClass *class;
     
     double threshold;
+    double shift;
+    double reception;
 
     RandomizeContext rc;
     FrameContext fc;
@@ -68,6 +70,8 @@ typedef struct SecamizeContext {
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
 static const AVOption secamize_options[] = {
     { "threshold", "set saturation threshold", OFFSET(threshold), AV_OPT_TYPE_DOUBLE, {.dbl=0.024}, 0, 1, FLAGS },
+    { "shift", "set simulated RF shift", OFFSET(shift), AV_OPT_TYPE_DOUBLE, {.dbl=0.024}, 0, 1, FLAGS },
+    { "reception", "set simulated RF reception", OFFSET(reception), AV_OPT_TYPE_DOUBLE, {.dbl=1.0}, 0, 1, FLAGS },
     { NULL }
 };
 
@@ -131,45 +135,45 @@ static int config_props(AVFilterLink *inlink)
     s->fc.cw = AV_CEIL_RSHIFT(inlink->w, desc->log2_chroma_w);
     s->fc.ch = AV_CEIL_RSHIFT(inlink->h, desc->log2_chroma_h);
 
-    for (c = 0; c < 2; c++) {
-        s->fc.cbuf[c] = av_malloc(sizeof(uint8_t) * s->fc.cw * s->fc.ch);
-        if (!s->fc.cbuf[c])
-            return AVERROR(ENOMEM);
+    s->fc.cbuf = av_malloc(sizeof(uint8_t) * s->fc.cw * s->fc.ch);
+    if (!s->fc.cbuf) {
+        return AVERROR(ENOMEM);
     }
 
     s->fc.dc.sws = sws_getContext(s->fc.lw, s->fc.lh, AV_PIX_FMT_GRAY8,
         s->fc.cw, s->fc.ch, AV_PIX_FMT_GRAY8, SWS_FAST_BILINEAR,
         NULL, NULL, NULL);
     s->fc.dc.delta = av_malloc(sizeof(uint8_t) * s->fc.cw * s->fc.ch);
-    s->fc.dc.rsz = av_malloc(sizeof(uint8_t) * s->fc.cw * s->fc.ch);
+    s->fc.dc.miniature = av_malloc(sizeof(uint8_t) * s->fc.cw * s->fc.ch);
 
-    if (!s->fc.dc.sws || !s->fc.dc.delta || !s->fc.dc.rsz)
+    if (!s->fc.dc.sws || !s->fc.dc.delta || !s->fc.dc.miniature)
         return AVERROR(ENOMEM);
 
     return 0;
 }
 
-static void collect_delta_info(SecamizeContext *s,
+static void make_delta(SecamizeContext *s,
                          const uint8_t *luma, int luma_lsz)
 {
-    uint8_t *rsz = s->fc.dc.rsz;
+    uint8_t *miniature = s->fc.dc.miniature;
     uint8_t *delta = s->fc.dc.delta;
     struct SwsContext *sws = s->fc.dc.sws;
     int cx, cy;
 
-    const uint8_t *const luma_ar[4]     = { luma };
-    int                  luma_lsz_ar[4] = { luma_lsz };
-    uint8_t	            *rsz_ar[4]      = { rsz };
-    int                  rsz_lsz_ar[4]  = { s->fc.cw };
+    const uint8_t *const luma_ar[4]           = { luma };
+    int                  luma_lsz_ar[4]       = { luma_lsz };
+    uint8_t	            *miniature_ar[4]      = { miniature };
+    int                  miniature_lsz_ar[4]  = { s->fc.cw };
 
-    sws_scale(sws, luma_ar, luma_lsz_ar, 0, s->fc.lh, rsz_ar, rsz_lsz_ar);
+    sws_scale(sws, luma_ar, luma_lsz_ar, 0, s->fc.lh,
+        miniature_ar, miniature_lsz_ar);
 
     for (cy = 0; cy < s->fc.ch; cy++) {
-        delta[0] = rsz[0];
+        delta[0] = miniature[0];
         for (cx = 1; cx < s->fc.cw; cx++)
-            delta[cx] = abs(rsz[cx - 1] - rsz[cx]) / 2;
+            delta[cx] = abs(miniature[cx - 1] - miniature[cx]) / 2;
         delta += s->fc.cw;
-        rsz += s->fc.cw;
+        miniature += s->fc.cw;
     }
 }
 
@@ -285,11 +289,11 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
                         in->data[0], in->linesize[0],
                         s->fc.lw, s->fc.lh);
 
-    collect_delta_info(s, in->data[0], in->linesize[0]);
+    make_delta(s, in->data[0], in->linesize[0]);
 
     for (c = 0; c < 2; c++) {
         int p = c + 1;
-        uint8_t *cbuf = s->fc.cbuf[c];
+        uint8_t *cbuf = s->fc.cbuf;
 
         chroma_noise(s, cbuf, s->fc.cw, in->data[p], in->linesize[p]);
         burn(s, out->data[p], out->linesize[p], cbuf, s->fc.cw);
@@ -305,11 +309,10 @@ static av_cold void uninit(AVFilterContext *ctx)
     int c;
     SecamizeContext *s = ctx->priv;
 
-    for (c = 0; c < 2; c++)
-        av_freep(&s->fc.cbuf[c]);
+    av_freep(&s->fc.cbuf);
 
     av_freep(&s->fc.dc.delta);
-    av_freep(&s->fc.dc.rsz);
+    av_freep(&s->fc.dc.miniature);
     sws_freeContext(s->fc.dc.sws);
 
     av_freep(&s->rc.rnd);
