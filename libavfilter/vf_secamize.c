@@ -125,7 +125,6 @@ static int query_formats(AVFilterContext *ctx)
 
 static int config_props(AVFilterLink *inlink)
 {
-    int c;
     AVFilterContext *ctx = inlink->dst;
     SecamizeContext *s = ctx->priv;
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
@@ -223,44 +222,38 @@ static void burn(SecamizeContext *s,
            const uint8_t *src, int src_lsz)
 {
     const uint8_t *delta = s->fc.dc.delta;
-    const double threshold = s->threshold;
+    const double threshold = 1.0 - s->shift;
+    const double reception = s->reception * 0.03 + 0.97;
     int cx, cy;
 
     for (cy = 0; cy < s->fc.ch; cy++) {
+        int fire = -1;
+
         for (cx = 0; cx < s->fc.cw; cx++) {
-            int point;
-            int gain, hs;
-            double ethrshld, fire, d;
+            double d, e;
 
             dst[cx] = src[cx];
 
             if (cx == 0) {
-                point = -1;
+                fire = 0;
                 continue;
             }
 
-            d = delta[cx] / 256.0;
-            gain = point == -1 ? 0x0C * 1.5 : cx - point;
-            hs = 0x0C + frand(&s->rc) * (0x0C * 10.5);
-            ethrshld = threshold + (frand(&s->rc) * threshold - threshold * 0.5);
+            d = delta[cx - 1] / 256.0;
+            e = threshold + (frand(&s->rc) * threshold - threshold * 0.5);
 
-            if ((d * frand(&s->rc) > ethrshld) && (gain > hs))
-                point = cx;
+            if (frand(&s->rc) > reception || d > e)
+                fire = frand(&s->rc) * 256.0;
 
-            if (point < 0)
+            if (fire < 0)
                 continue;
-
-            fire = 320.0 / (gain + 1.0) - 1.0;
-            if (fire < 0.0) {
-                point = -1;
-                continue;
-            }
 
             dst[cx] = COLOR_CLAMP(dst[cx] + fire);
+            fire -= 16;
         }
-        dst += dst_lsz;
-        src += src_lsz;
-        delta += s->fc.cw;
+        dst     += dst_lsz;
+        src     += src_lsz;
+        delta   += s->fc.cw;
     }
 }
 
@@ -306,7 +299,6 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 
 static av_cold void uninit(AVFilterContext *ctx)
 {
-    int c;
     SecamizeContext *s = ctx->priv;
 
     av_freep(&s->fc.cbuf);
