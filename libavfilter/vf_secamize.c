@@ -168,9 +168,9 @@ static void make_delta(SecamizeContext *s,
         miniature_ar, miniature_lsz_ar);
 
     for (cy = 0; cy < s->fc.ch; cy++) {
-        delta[0] = miniature[0];
+        delta[0] = 0;
         for (cx = 1; cx < s->fc.cw; cx++)
-            delta[cx] = abs(miniature[cx - 1] - miniature[cx]) / 2;
+            delta[cx] = abs(miniature[cx - 1] - miniature[cx]);
         delta += s->fc.cw;
         miniature += s->fc.cw;
     }
@@ -222,34 +222,42 @@ static void burn(SecamizeContext *s,
            const uint8_t *src, int src_lsz)
 {
     const uint8_t *delta = s->fc.dc.delta;
-    const double threshold = 1.0 - s->shift;
     const double reception = s->reception * 0.03 + 0.97;
+    const double noise_amp = 36.0;
+    const double noise_scale = 0.48;
     int cx, cy;
 
     for (cy = 0; cy < s->fc.ch; cy++) {
         int fire = -1;
+        int step = 0;
+        unsigned int r = av_lfg_get(&s->rc.lfg);
 
         for (cx = 0; cx < s->fc.cw; cx++) {
-            double d, e;
+            double d, e, v;
 
-            dst[cx] = src[cx];
+            v = noise2(&s->rc, r + s->fc.cw * cy + cx,
+                       noise_amp, noise_scale) - (noise_amp * 0.5);
+
+            dst[cx] = COLOR_CLAMP(src[cx] + v);
 
             if (cx == 0) {
                 fire = 0;
                 continue;
             }
 
-            d = delta[cx - 1] / 256.0;
-            e = threshold + (frand(&s->rc) * threshold - threshold * 0.5);
+            d = (cx == 0 ? delta[cx] : delta[cx - 1]) / 256.0;
+            e = 1.0 - frand(&s->rc) * s->shift;
 
-            if (frand(&s->rc) > reception || d > e)
-                fire = frand(&s->rc) * 256.0;
+            if (frand(&s->rc) > reception || d > e) {
+                fire = frand(&s->rc) * (255 - dst[cx]);
+                step = (256 - dst[cx]) / 16;
+            }
 
             if (fire < 0)
                 continue;
 
             dst[cx] = COLOR_CLAMP(dst[cx] + fire);
-            fire -= 16;
+            fire -= step;
         }
         dst     += dst_lsz;
         src     += src_lsz;
@@ -286,10 +294,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 
     for (c = 0; c < 2; c++) {
         int p = c + 1;
-        uint8_t *cbuf = s->fc.cbuf;
-
-        chroma_noise(s, cbuf, s->fc.cw, in->data[p], in->linesize[p]);
-        burn(s, out->data[p], out->linesize[p], cbuf, s->fc.cw);
+        burn(s, out->data[p], out->linesize[p], in->data[p], in->linesize[p]);
     }
 
     if (!direct)
