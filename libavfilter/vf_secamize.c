@@ -230,6 +230,7 @@ static void burn(SecamizeContext *s,
     for (cy = 0; cy < s->fc.ch; cy++) {
         int fire = -1;
         int step = 0;
+        int px = 0;
         unsigned int r = av_lfg_get(&s->rc.lfg);
 
         for (cx = 0; cx < s->fc.cw; cx++) {
@@ -245,12 +246,18 @@ static void burn(SecamizeContext *s,
                 continue;
             }
 
-            d = (cx == 0 ? delta[cx] : delta[cx - 1]) / 256.0;
+            d = delta[cx] / 256.0;
             e = 1.0 - frand(&s->rc) * s->shift;
 
             if (frand(&s->rc) > reception || d > e) {
                 fire = frand(&s->rc) * (255 - dst[cx]);
                 step = (256 - dst[cx]) / 16;
+                px = cx - 1;
+            }
+
+            if ((cx - px) < 3) {
+                dst[cx] = COLOR_CLAMP(dst[cx] + fire * (0.25 * (cx - px)));
+                continue;
             }
 
             if (fire < 0)
